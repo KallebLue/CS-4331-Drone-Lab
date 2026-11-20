@@ -17,17 +17,20 @@ from cflib.utils.multiranger import Multiranger
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E1')
 
 # Flight parameters
-DEFAULT_HEIGHT = 0.5
+MAX_HEIGHT = 0.8 # 
+DEFAULT_HEIGHT = 0.4  
 MIN_DISTANCE = 0.2  
-BOX_LIMIT = .5
-GOAL_X = .4
+BOX_LIMIT = .7
+GOAL_X = 2.5
 BUFFER = 0.05  
 VELOCITY = 0.15  
 MAX_RUN_TIME = 180
+COLLISION_COUNT = 0
+
 
 # Position Tracking
-position_estimate = [0, 0]  
-position_x, position_y = [], []  
+position_estimate = [0, 0,0]  
+position_x, position_y, position_z = [], [], []  
 
 # Global flag to stop flight safely
 keep_flying = True  
@@ -56,24 +59,34 @@ def is_close(range):
 "---------------------------------------------------------------------------"
 """ Updates position estimate and stores data for visualization """
 def log_pos_callback(timestamp, data, logconf):
-    global position_estimate, position_x, position_y
+    global position_estimate, position_x, position_y, position_z
     position_estimate[0] = data['stateEstimate.x']
     position_estimate[1] = data['stateEstimate.y']
+    position_estimate[2] = data['stateEstimate.z']
     position_x.append(position_estimate[0])
     position_y.append(position_estimate[1])
+    position_z.append(position_estimate[2])
 "---------------------------------------------------------------------------"
 
 
 "---------------------------------------------------------------------------"
 """Plots the drone's movement in 2D space."""
 def plot_position_data():
-    plt.figure(figsize=(8, 6))
-    plt.plot(position_x, position_y, marker='o', linestyle='-', markersize=3, label="Drone Path")
-    plt.xlabel("X Position")
-    plt.ylabel("Y Position")
-    plt.title("Drone Movement Path")
-    plt.legend()
-    plt.grid(True)
+    fig = plt.figure(figsize=(9, 7))
+    ax = fig.add_subplot(projection='3d')
+
+    ax.plot(position_x, position_y, position_z, '-', linewidth=2, label="Drone Path")
+    if position_x:
+        ax.scatter(position_x[0], position_y[0], position_z[0], color='green', s=40, label="Start")
+        ax.scatter(position_x[-1], position_y[-1], position_z[-1], color='red', s=40, label="Landing")
+
+    ax.set_xlabel("X Position (m) - forward")
+    ax.set_ylabel("Y Position (m) - left +")
+    ax.set_zlabel("Z Position (m) - height")
+    ax.set_ylim(-BOX_LIMIT, BOX_LIMIT)
+    ax.set_zlim(0, MAX_HEIGHT)
+    ax.set_title(f"Drone Movement Path | Collisions: {COLLISION_COUNT}")
+    ax.legend()
     plt.show()
 "---------------------------------------------------------------------------"
 
@@ -89,13 +102,14 @@ if __name__ == '__main__':
         logconf = LogConfig(name='Position', period_in_ms=10)
         logconf.add_variable('stateEstimate.x', 'float')
         logconf.add_variable('stateEstimate.y', 'float')
+        logconf.add_variable('stateEstimate.z', 'float')
         scf.cf.log.add_config(logconf)
         logconf.data_received_cb.add_callback(log_pos_callback)
         logconf.start()
 
         with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as motion_commander:
             with Multiranger(scf) as multiranger:
-                right = random.choice([0, 1])  # Initialize randomly
+                horizontal_direction = 3  # Initialize to show that a direction has not been chosen
                 start_time = time.time()       # Fixed variable name from 'start'
                 try:
                     while keep_flying:
@@ -115,10 +129,33 @@ if __name__ == '__main__':
                             motion_commander.land()
                             break
 
+                        if is_close(multiranger.right):
+                            print("Object detected to the right! Stopping.")
+                            motion_commander.stop()
+                            COLLISION_COUNT += 1
+                            time.sleep(0.5)
+                            
+                            print("Moving leftward.")
+                            motion_commander.start_linear_motion(0, VELOCITY, 0)
+                            time.sleep(1)
+                            motion_commander.stop()
+
+                        if is_close(multiranger.left):
+                            print("Object detected to the left! Stopping.")
+                            motion_commander.stop()
+                            COLLISION_COUNT += 1
+                            time.sleep(0.5)
+                            
+                            print("Moving rightward.")
+                            motion_commander.start_linear_motion(0, -VELOCITY, 0)
+                            time.sleep(1)
+                            motion_commander.stop()
+                            
                         # **Obstacle Avoidance**
                         if is_close(multiranger.front):
                             print("Object detected in front! Stopping.")
                             motion_commander.stop()
+                            COLLISION_COUNT += 1
                             time.sleep(0.5)
 
                             print("Moving backward.")
@@ -126,34 +163,36 @@ if __name__ == '__main__':
                             time.sleep(1)
                             motion_commander.stop()
 
-                            # Randomly choose between right (1) and left (0)
-                            right = random.choice([0, 1])
 
-                            if right == 1:
+
+                            if horizontal_direction == 0:
+                                # Randomly choose between right (1) and left (2)
+                                horizontal_direction = random.choice([1, 2, 3]) 
+
+                            # Don't go up if that would pass the height limit
+                            if horizontal_direction == 3 and position_estimate[2] + VELOCITY > MAX_HEIGHT - BUFFER:
+                                print("Too high to go up, choosing a side instead.")
+                                horizontal_direction = random.choice([1, 2])
+
+                            #Once a direction is chosen it is kept and the drone moves in the same direction
+                            if horizontal_direction == 1:
                                 print("Moving right.")
                                 motion_commander.start_linear_motion(0, -VELOCITY, 0)
-                            else:
+                            elif horizontal_direction == 2:
                                 print("Moving left.")       
                                 motion_commander.start_linear_motion(0, VELOCITY, 0)
+                            elif horizontal_direction == 3:
+                                print("Moving up.")
+                                motion_commander.start_linear_motion(0, 0, VELOCITY)
+                            else:
+                                print("invalid value inside of horizontal direction variable")
+                                horizontal_direction = 0
                             
                             time.sleep(1)
                             motion_commander.stop()
 
                         # **Boundary Handling**
-                        if position_estimate[0] > BOX_LIMIT:
-                            print("Hit right boundary, stopping.")
-                            motion_commander.stop()
-                            time.sleep(0.5)
-
-                            print("Moving left.")
-                            motion_commander.start_linear_motion(0, VELOCITY, 0)  # move left
-                            time.sleep(1)
-                            motion_commander.stop()
-                            right = 0 
-
-                            print("Continuing forward.")
-
-                        elif position_estimate[0] < -BOX_LIMIT:
+                        if position_estimate[1] > BOX_LIMIT - BUFFER:
                             print("Hit left boundary, stopping.")
                             motion_commander.stop()
                             time.sleep(0.5)
@@ -162,16 +201,29 @@ if __name__ == '__main__':
                             motion_commander.start_linear_motion(0, -VELOCITY, 0)  # move right
                             time.sleep(1)
                             motion_commander.stop()
-                            right = 1
+                            horizontal_direction = 1
+
                             print("Continuing forward.")
 
-                        elif position_estimate[1] > BOX_LIMIT:
+                        elif position_estimate[1] < -BOX_LIMIT + BUFFER:
+                            print("Hit right boundary, stopping.")
+                            motion_commander.stop()
+                            time.sleep(0.5)
+
+                            print("Moving left.")
+                            motion_commander.start_linear_motion(0, VELOCITY, 0)  # move left
+                            time.sleep(1)
+                            motion_commander.stop()
+                            horizontal_direction = 2
+                            print("Continuing forward.")
+
+                        elif position_estimate[2] > MAX_HEIGHT - BUFFER:
                             print("Hit upper boundary, stopping")
                             motion_commander.stop()
                             time.sleep(.5)
 
                             print("Moving Down")
-                            motion_commander.start_linear_motion(VELOCITY , 0, 0)  # move down
+                            motion_commander.start_linear_motion(0, 0, -VELOCITY)  # move down
                             time.sleep(1)
                             motion_commander.stop()
 
@@ -192,5 +244,6 @@ if __name__ == '__main__':
 
         logconf.stop()
 
+    print(f"Total collisions: {COLLISION_COUNT}")
     # Plot recorded position data after flight
     plot_position_data()
