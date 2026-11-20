@@ -109,7 +109,7 @@ if __name__ == '__main__':
 
         with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as motion_commander:
             with Multiranger(scf) as multiranger:
-                horizontal_direction = 3  # Initialize to show that a direction has not been chosen
+                horizontal_direction = 0  # Initialize to show that a direction has not been chosen
                 start_time = time.time()       # Fixed variable name from 'start'
                 try:
                     while keep_flying:
